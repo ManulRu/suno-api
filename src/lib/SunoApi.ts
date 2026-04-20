@@ -176,12 +176,11 @@ class SunoApi {
       headers: authHeaders
     });
     const resp = sessionResponse?.data?.response;
-    logger.info('Session response keys: ' + JSON.stringify(resp ? Object.keys(resp) : null));
     if (!resp?.last_active_session_id) {
-      const hasClient = !!this.cookies.__client;
-      const respKeys = resp ? Object.keys(resp) : [];
+      const sessions = resp?.sessions || [];
+      const sessionStatuses = sessions.map((s: any) => s.status);
       throw new Error(
-        `Failed to get session id. __client_set=${hasClient}, resp_keys=${JSON.stringify(respKeys)}, resp_null=${resp === null}`
+        `Failed to get session id. sessions_count=${sessions.length}, statuses=${JSON.stringify(sessionStatuses)}, last_active=${resp?.last_active_session_id}`
       );
     }
     // Save session ID for later use
