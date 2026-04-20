@@ -197,22 +197,15 @@ class SunoApi {
     // Renew session token
     logger.info('KeepAlive...\n');
     const clientToken = (this.cookies.__client || '').replace(/[^\x20-\x7E]/g, '').trim();
-    const renewHeaders: Record<string, string> = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-      'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
-      'x-suno-client': undefined as any,
-      'X-Requested-With': undefined as any,
-      'Affiliate-Id': undefined as any,
-      'Device-Id': undefined as any,
-    };
-    if (clientToken) {
-      renewHeaders.Authorization = `Bearer ${clientToken}`;
-    }
-    const renewResponse = await this.client.post(renewUrl, {}, {
-      headers: renewHeaders
+    // Use a clean axios instance (no Android headers) for Clerk auth endpoint
+    const cleanClient = axios.create({
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'Authorization': clientToken ? `Bearer ${clientToken}` : undefined,
+        'Cookie': `__client=${clientToken}`,
+      }
     });
+    const renewResponse = await cleanClient.post(renewUrl, {});
     if (isWait) {
       await sleep(1, 2);
     }
