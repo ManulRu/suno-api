@@ -155,35 +155,30 @@ class SunoApi {
    */
   private async getAuthToken() {
     logger.info('Getting the session ID');
-    // Try env var first, then fall back to API lookup
-    const sessionIdFromEnv = process.env.SUNO_SESSION_ID;
-    if (sessionIdFromEnv) {
-      logger.info('Using SUNO_SESSION_ID from env');
-      this.sid = sessionIdFromEnv;
+    // Priority 1: env var SUNO_SESSION_ID
+    if (process.env.SUNO_SESSION_ID) {
+      this.sid = process.env.SUNO_SESSION_ID;
+      logger.info('Session ID from SUNO_SESSION_ID env var');
       return;
     }
-    // Try to get session ID from Clerk API
-    const getSessionUrl = `${SunoApi.CLERK_BASE_URL}/v1/client?__clerk_api_version=2025-11-10&_clerk_js_version=${SunoApi.CLERK_VERSION}`;
-    const authHeaders: Record<string, string> = {};
-    if (this.cookies.__client) {
-      authHeaders.Authorization = `Bearer ${this.cookies.__client}`;
-    }
+    // Priority 2: try Clerk API
     try {
+      const getSessionUrl = `${SunoApi.CLERK_BASE_URL}/v1/client?__clerk_api_version=2025-11-10&_clerk_js_version=${SunoApi.CLERK_VERSION}`;
+      const authHeaders: Record<string, string> = {};
+      if (this.cookies.__client) {
+        authHeaders.Authorization = `Bearer ${this.cookies.__client}`;
+      }
       const sessionResponse = await this.client.get(getSessionUrl, { headers: authHeaders });
       const resp = sessionResponse?.data?.response;
-      if (resp?.last_active_session_id) {
-        this.sid = resp.last_active_session_id;
-        return;
-      }
-      // Extract from sessions array if last_active_session_id is missing
-      const activeSessions = (resp?.sessions || []).filter((s: any) => s.status === 'active');
-      if (activeSessions.length > 0) {
-        this.sid = activeSessions[0].id;
-        logger.info('Using first active session: ' + this.sid);
+      const sid = resp?.last_active_session_id
+        || (resp?.sessions || []).find((s: any) => s.status === 'active')?.id;
+      if (sid) {
+        this.sid = sid;
+        logger.info('Session ID from Clerk API: ' + sid);
         return;
       }
     } catch (e) {
-      logger.error('Clerk API error: ' + e);
+      logger.warn('Clerk API lookup failed: ' + e);
     }
     throw new Error('Failed to get session id, you may need to update the SUNO_COOKIE');
   }
