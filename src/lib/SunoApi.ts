@@ -155,7 +155,7 @@ class SunoApi {
     const getSessionUrl = `${SunoApi.CLERK_BASE_URL}/v1/client?__clerk_api_version=2025-11-10&_clerk_js_version=${SunoApi.CLERK_VERSION}`;
     // Get session ID
     const sessionResponse = await this.client.get(getSessionUrl, {
-      headers: { Authorization: this.cookies.__client }
+      headers: { Authorization: `Bearer ${this.cookies.__client}` }
     });
     if (!sessionResponse?.data?.response?.last_active_session_id) {
       throw new Error(
@@ -179,7 +179,7 @@ class SunoApi {
     // Renew session token
     logger.info('KeepAlive...\n');
     const renewResponse = await this.client.post(renewUrl, {}, {
-      headers: { Authorization: this.cookies.__client }
+      headers: { Authorization: `Bearer ${this.cookies.__client}` }
     });
     if (isWait) {
       await sleep(1, 2);
