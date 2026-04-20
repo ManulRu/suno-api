@@ -180,7 +180,8 @@ class SunoApi {
     } catch (e) {
       logger.warn('Clerk API lookup failed: ' + e);
     }
-    throw new Error('Failed to get session id, you may need to update the SUNO_COOKIE');
+    const sunoEnvKeys = Object.keys(process.env).filter(k => k.startsWith('SUNO'));
+    throw new Error(`Failed to get session id. SUNO env vars: ${JSON.stringify(sunoEnvKeys)}, SESSION_ID_val: "${process.env.SUNO_SESSION_ID}"`);
   }
 
   /**
