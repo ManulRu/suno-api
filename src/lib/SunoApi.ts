@@ -196,8 +196,17 @@ class SunoApi {
     const renewUrl = `${SunoApi.CLERK_BASE_URL}/v1/client/sessions/${this.sid}/tokens?__clerk_api_version=2025-11-10&_clerk_js_version=${SunoApi.CLERK_VERSION}`;
     // Renew session token
     logger.info('KeepAlive...\n');
-    const renewHeaders: Record<string, string> = {};
     const clientToken = (this.cookies.__client || '').replace(/[^\x20-\x7E]/g, '').trim();
+    const renewHeaders: Record<string, string> = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+      'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"',
+      'x-suno-client': undefined as any,
+      'X-Requested-With': undefined as any,
+      'Affiliate-Id': undefined as any,
+      'Device-Id': undefined as any,
+    };
     if (clientToken) {
       renewHeaders.Authorization = `Bearer ${clientToken}`;
     }
