@@ -166,8 +166,9 @@ class SunoApi {
     try {
       const getSessionUrl = `${SunoApi.CLERK_BASE_URL}/v1/client?__clerk_api_version=2025-11-10&_clerk_js_version=${SunoApi.CLERK_VERSION}`;
       const authHeaders: Record<string, string> = {};
-      if (this.cookies.__client) {
-        authHeaders.Authorization = `Bearer ${this.cookies.__client}`;
+      const clientJwt = (this.cookies.__client || '').replace(/[^\x20-\x7E]/g, '').trim();
+      if (clientJwt) {
+        authHeaders.Authorization = `Bearer ${clientJwt}`;
       }
       const sessionResponse = await this.client.get(getSessionUrl, { headers: authHeaders });
       const resp = sessionResponse?.data?.response;
@@ -196,8 +197,9 @@ class SunoApi {
     // Renew session token
     logger.info('KeepAlive...\n');
     const renewHeaders: Record<string, string> = {};
-    if (this.cookies.__client) {
-      renewHeaders.Authorization = `Bearer ${this.cookies.__client}`;
+    const clientToken = (this.cookies.__client || '').replace(/[^\x20-\x7E]/g, '').trim();
+    if (clientToken) {
+      renewHeaders.Authorization = `Bearer ${clientToken}`;
     }
     const renewResponse = await this.client.post(renewUrl, {}, {
       headers: renewHeaders
