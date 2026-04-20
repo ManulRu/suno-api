@@ -153,10 +153,16 @@ class SunoApi {
     logger.info('Getting the session ID');
     // URL to get session ID
     const getSessionUrl = `${SunoApi.CLERK_BASE_URL}/v1/client?__clerk_api_version=2025-11-10&_clerk_js_version=${SunoApi.CLERK_VERSION}`;
+    // Build headers — only add Authorization if __client cookie is present
+    const extraHeaders: Record<string, string> = {};
+    if (this.cookies.__client) {
+      extraHeaders.Authorization = `Bearer ${this.cookies.__client}`;
+    }
     // Get session ID
     const sessionResponse = await this.client.get(getSessionUrl, {
-      headers: { Authorization: `Bearer ${this.cookies.__client}` }
+      headers: extraHeaders
     });
+    logger.info('Session response: ' + JSON.stringify(sessionResponse?.data?.response));
     if (!sessionResponse?.data?.response?.last_active_session_id) {
       throw new Error(
         'Failed to get session id, you may need to update the SUNO_COOKIE'
@@ -178,8 +184,12 @@ class SunoApi {
     const renewUrl = `${SunoApi.CLERK_BASE_URL}/v1/client/sessions/${this.sid}/tokens?__clerk_api_version=2025-11-10&_clerk_js_version=${SunoApi.CLERK_VERSION}`;
     // Renew session token
     logger.info('KeepAlive...\n');
+    const renewHeaders: Record<string, string> = {};
+    if (this.cookies.__client) {
+      renewHeaders.Authorization = `Bearer ${this.cookies.__client}`;
+    }
     const renewResponse = await this.client.post(renewUrl, {}, {
-      headers: { Authorization: `Bearer ${this.cookies.__client}` }
+      headers: renewHeaders
     });
     if (isWait) {
       await sleep(1, 2);
