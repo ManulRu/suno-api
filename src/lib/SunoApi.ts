@@ -166,10 +166,13 @@ class SunoApi {
     const sessionResponse = await this.client.get(getSessionUrl, {
       headers: extraHeaders
     });
-    logger.info('Session response: ' + JSON.stringify(sessionResponse?.data?.response));
-    if (!sessionResponse?.data?.response?.last_active_session_id) {
+    const resp = sessionResponse?.data?.response;
+    logger.info('Session response keys: ' + JSON.stringify(resp ? Object.keys(resp) : null));
+    if (!resp?.last_active_session_id) {
+      const hasClient = !!this.cookies.__client;
+      const respKeys = resp ? Object.keys(resp) : [];
       throw new Error(
-        'Failed to get session id, you may need to update the SUNO_COOKIE'
+        `Failed to get session id. __client_set=${hasClient}, resp_keys=${JSON.stringify(respKeys)}, resp_null=${resp === null}`
       );
     }
     // Save session ID for later use
