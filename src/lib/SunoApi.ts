@@ -85,6 +85,10 @@ class SunoApi {
   constructor(cookies: string) {
     this.userAgent = new UserAgent(/Macintosh/).random().toString(); // Usually Mac systems get less amount of CAPTCHAs
     this.cookies = cookie.parse(cookies);
+    // If SUNO_COOKIE is a raw JWT (not cookie format), treat it as __client token
+    if (!this.cookies.__client && cookies.trim().startsWith('eyJ')) {
+      this.cookies.__client = cookies.trim();
+    }
     this.deviceId = this.cookies.ajs_anonymous_id || randomUUID();
     this.client = axios.create({
       withCredentials: true,
