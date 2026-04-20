@@ -156,9 +156,10 @@ class SunoApi {
   private async getAuthToken() {
     logger.info('Getting the session ID');
     // Priority 1: env var SUNO_SESSION_ID
-    if (process.env.SUNO_SESSION_ID) {
-      this.sid = process.env.SUNO_SESSION_ID;
-      logger.info('Session ID from SUNO_SESSION_ID env var');
+    const envSid = process.env['SUNO_SESSION_ID'];
+    if (envSid && envSid.trim()) {
+      this.sid = envSid.trim();
+      logger.info('Session ID from env: ' + this.sid);
       return;
     }
     // Priority 2: try Clerk API
@@ -174,14 +175,12 @@ class SunoApi {
         || (resp?.sessions || []).find((s: any) => s.status === 'active')?.id;
       if (sid) {
         this.sid = sid;
-        logger.info('Session ID from Clerk API: ' + sid);
         return;
       }
     } catch (e) {
       logger.warn('Clerk API lookup failed: ' + e);
     }
-    const sunoEnvKeys = Object.keys(process.env).filter(k => k.startsWith('SUNO'));
-    throw new Error(`Failed to get session id. SUNO env vars: ${JSON.stringify(sunoEnvKeys)}, SESSION_ID_val: "${process.env.SUNO_SESSION_ID}"`);
+    throw new Error('Failed to get session id, you may need to update the SUNO_COOKIE');
   }
 
   /**
