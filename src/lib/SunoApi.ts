@@ -155,36 +155,27 @@ class SunoApi {
    */
   private async getAuthToken() {
     logger.info('Getting the session ID');
+    // If SUNO_SESSION_ID is provided, use it directly (avoids IP-based session filtering by Clerk)
+    if (process.env.SUNO_SESSION_ID) {
+      logger.info('Using SUNO_SESSION_ID from env: ' + process.env.SUNO_SESSION_ID);
+      this.sid = process.env.SUNO_SESSION_ID;
+      return;
+    }
     // URL to get session ID
     const getSessionUrl = `${SunoApi.CLERK_BASE_URL}/v1/client?__clerk_api_version=2025-11-10&_clerk_js_version=${SunoApi.CLERK_VERSION}`;
-    // For Clerk auth endpoint: use browser-like headers to get full session response
-    const authHeaders: Record<string, string> = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-      'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
-      'x-suno-client': undefined as any,
-      'X-Requested-With': undefined as any,
-      'Affiliate-Id': undefined as any,
-      'Device-Id': undefined as any,
-    };
+    const authHeaders: Record<string, string> = {};
     if (this.cookies.__client) {
       authHeaders.Authorization = `Bearer ${this.cookies.__client}`;
     }
-    // Get session ID
-    const sessionResponse = await this.client.get(getSessionUrl, {
-      headers: authHeaders
-    });
+    const sessionResponse = await this.client.get(getSessionUrl, { headers: authHeaders });
     const resp = sessionResponse?.data?.response;
     if (!resp?.last_active_session_id) {
       const sessions = resp?.sessions || [];
-      const sessionStatuses = sessions.map((s: any) => s.status);
       throw new Error(
-        `Failed to get session id. sessions_count=${sessions.length}, statuses=${JSON.stringify(sessionStatuses)}, last_active=${resp?.last_active_session_id}`
+        `Failed to get session id. sessions_count=${sessions.length}. Set SUNO_SESSION_ID env var to bypass.`
       );
     }
-    // Save session ID for later use
-    this.sid = sessionResponse.data.response.last_active_session_id;
+    this.sid = resp.last_active_session_id;
   }
 
   /**
