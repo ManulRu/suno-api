@@ -157,14 +157,23 @@ class SunoApi {
     logger.info('Getting the session ID');
     // URL to get session ID
     const getSessionUrl = `${SunoApi.CLERK_BASE_URL}/v1/client?__clerk_api_version=2025-11-10&_clerk_js_version=${SunoApi.CLERK_VERSION}`;
-    // Build headers — only add Authorization if __client cookie is present
-    const extraHeaders: Record<string, string> = {};
+    // For Clerk auth endpoint: use browser-like headers to get full session response
+    const authHeaders: Record<string, string> = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+      'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"',
+      'x-suno-client': undefined as any,
+      'X-Requested-With': undefined as any,
+      'Affiliate-Id': undefined as any,
+      'Device-Id': undefined as any,
+    };
     if (this.cookies.__client) {
-      extraHeaders.Authorization = `Bearer ${this.cookies.__client}`;
+      authHeaders.Authorization = `Bearer ${this.cookies.__client}`;
     }
     // Get session ID
     const sessionResponse = await this.client.get(getSessionUrl, {
-      headers: extraHeaders
+      headers: authHeaders
     });
     const resp = sessionResponse?.data?.response;
     logger.info('Session response keys: ' + JSON.stringify(resp ? Object.keys(resp) : null));
