@@ -412,11 +412,35 @@ class SunoApi {
     logger.info('CAPTCHA required. Launching browser...')
     const browser = await this.launchBrowser();
     const page = await browser.newPage();
-    await page.goto('https://suno.com/create', { referer: 'https://www.google.com/', waitUntil: 'domcontentloaded', timeout: 0 });
+    // Try /create first (legacy), then fall back to / (current UI as of 2026-04).
+    const CREATE_URLS = ['https://suno.com/create', 'https://suno.com/'];
+    let navigated = false;
+    for (const url of CREATE_URLS) {
+      try {
+        await page.goto(url, { referer: 'https://www.google.com/', waitUntil: 'domcontentloaded', timeout: 30000 });
+        logger.info({ event: 'create_page_loaded', url });
+        navigated = true;
+        break;
+      } catch (e: any) {
+        logger.warn({ event: 'create_page_goto_failed', url, err: e?.message });
+      }
+    }
+    if (!navigated) {
+      throw new Error('Failed to load suno.com create page (tried both /create and /)');
+    }
 
     logger.info('Waiting for Suno interface to load');
-    // await page.locator('.react-aria-GridList').waitFor({ timeout: 60000 });
-    await page.waitForResponse('**/api/project/**\\?**', { timeout: 60000 }); // wait for song list API call
+    // Wait for either the project API call (legacy) OR for a textarea to appear
+    // (works on both old /create and new / layouts). Don't fail the whole flow
+    // if neither happens within 20s — the selector pick will retry below.
+    try {
+      await Promise.race([
+        page.waitForResponse('**/api/project/**\\?**', { timeout: 20000 }),
+        page.waitForSelector('textarea, [contenteditable="true"]', { timeout: 20000 }),
+      ]);
+    } catch (e: any) {
+      logger.warn({ event: 'interface_load_wait_timeout', err: e?.message, msg: 'proceeding anyway, selector picker will retry' });
+    }
 
     if (this.ghostCursorEnabled)
       this.cursor = await createCursor(page);
@@ -430,7 +454,17 @@ class SunoApi {
     // Multi-selector with fallbacks. Suno's /create DOM changes over time;
     // we try candidates in order and log which one matched. The winning
     // selector should be promoted to the top of the list.
+    // Based on 2026-04-22 UI screenshot: placeholder is "Describe the song
+    // you want to make" on the homepage — Suno moved the create flow to /.
     const TEXTAREA_CANDIDATES = [
+      // Current (2026-04 UI): homepage Simple-mode input
+      'textarea[placeholder*="Describe the song" i]',
+      'textarea[placeholder*="describe" i]',
+      'input[placeholder*="Describe the song" i]',
+      'input[placeholder*="describe" i]',
+      '[contenteditable="true"][placeholder*="describe" i]',
+      '[contenteditable="true"][aria-label*="describe" i]',
+      // Custom-mode variants (lyrics textareas)
       '.custom-textarea',
       'textarea[data-testid*="custom"]',
       'textarea[data-testid*="lyrics"]',
@@ -438,8 +472,9 @@ class SunoApi {
       'textarea[placeholder*="Enter your lyrics" i]',
       'textarea[aria-label*="lyrics" i]',
       'textarea[name*="lyrics" i]',
-      // Fallback to the first textarea on the page — risky but beats timing out.
+      // Last resort
       'textarea',
+      '[contenteditable="true"]',
     ];
     const textarea = await pickLocator(page, TEXTAREA_CANDIDATES, 'textarea');
     await this.click(textarea);
