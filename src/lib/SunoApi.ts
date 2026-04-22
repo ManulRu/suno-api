@@ -69,6 +69,27 @@ interface PersonaResponse {
   is_following: boolean;
 }
 
+/**
+ * Try CSS selectors in order; return the first locator that matches at least
+ * one visible element on the page. Logs which selector won so we can promote
+ * it to the top of the list on future iterations. Throws a descriptive error
+ * if none match within the per-selector timeout.
+ */
+async function pickLocator(page: Page, candidates: string[], label: string, perSelectorTimeoutMs = 2000): Promise<Locator> {
+  for (const selector of candidates) {
+    try {
+      const locator = page.locator(selector).first();
+      await locator.waitFor({ state: 'attached', timeout: perSelectorTimeoutMs });
+      logger.info({ event: 'selector_matched', label, selector });
+      return locator;
+    } catch {
+      // try next
+    }
+  }
+  logger.error({ event: 'selector_no_match', label, tried: candidates });
+  throw new Error(`No selector matched for ${label}. Tried: ${candidates.join(' | ')}. Suno DOM likely changed — run scripts/diagnose-selectors.mjs.`);
+}
+
 class SunoApi {
   private static BASE_URL: string = 'https://studio-api.prod.suno.com';
   private static CLERK_BASE_URL: string = 'https://auth.suno.com';
@@ -406,11 +427,35 @@ class SunoApi {
       // await this.click(page, { x: 318, y: 13 });
     } catch(e) {}
 
-    const textarea = page.locator('.custom-textarea');
+    // Multi-selector with fallbacks. Suno's /create DOM changes over time;
+    // we try candidates in order and log which one matched. The winning
+    // selector should be promoted to the top of the list.
+    const TEXTAREA_CANDIDATES = [
+      '.custom-textarea',
+      'textarea[data-testid*="custom"]',
+      'textarea[data-testid*="lyrics"]',
+      'textarea[placeholder*="lyrics" i]',
+      'textarea[placeholder*="Enter your lyrics" i]',
+      'textarea[aria-label*="lyrics" i]',
+      'textarea[name*="lyrics" i]',
+      // Fallback to the first textarea on the page — risky but beats timing out.
+      'textarea',
+    ];
+    const textarea = await pickLocator(page, TEXTAREA_CANDIDATES, 'textarea');
     await this.click(textarea);
     await textarea.pressSequentially('Lorem ipsum', { delay: 80 });
 
-    const button = page.locator('button[aria-label="Create"]').locator('div.flex');
+    const CREATE_BUTTON_CANDIDATES = [
+      'button[aria-label="Create"]',
+      'button[aria-label*="Create" i]',
+      'button[data-testid*="create"]',
+      'button[type="submit"]',
+    ];
+    const createButton = await pickLocator(page, CREATE_BUTTON_CANDIDATES, 'create_button');
+    // Preserve original behavior: click the inner div.flex if present, else the button.
+    const innerFlex = createButton.locator('div.flex').first();
+    const hasInner = await innerFlex.count().then(c => c > 0).catch(() => false);
+    const button = hasInner ? innerFlex : createButton;
     this.click(button);
 
     const controller = new AbortController();

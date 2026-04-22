@@ -37,3 +37,7 @@ yarn-error.log*
 next-env.d.ts
 
 .idea
+
+# diagnostic script artifacts (may contain account UI)
+/scripts/diagnose-output.json
+/scripts/diagnose.png
