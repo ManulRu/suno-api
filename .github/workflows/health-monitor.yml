@@ -1,0 +1,77 @@
+name: Prod Health Monitor
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      URL: ${{ vars.RAILWAY_PUBLIC_URL || 'https://suno-api-production-cfc9.up.railway.app' }}
+      TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TG_CHAT: ${{ secrets.ADMIN_TELEGRAM_CHAT_ID }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Hit /api/health
+        id: probe
+        run: |
+          set +e
+          code=$(curl -sS -o /tmp/health.json -w "%{http_code}" --max-time 20 "$URL/api/health")
+          echo "http_code=$code" >> $GITHUB_OUTPUT
+          status=$(jq -r '.status // "unknown"' /tmp/health.json 2>/dev/null || echo "unknown")
+          refresh=$(jq -r '.suno_auth.last_refresh_sec_ago // "null"' /tmp/health.json 2>/dev/null || echo "null")
+          echo "status=$status" >> $GITHUB_OUTPUT
+          echo "refresh_ago=$refresh" >> $GITHUB_OUTPUT
+          if [ "$code" = "200" ] && [ "$status" = "ok" ]; then
+            echo "result=ok" >> $GITHUB_OUTPUT
+          else
+            echo "result=fail" >> $GITHUB_OUTPUT
+          fi
+          cat /tmp/health.json || true
+
+      - name: Handle prod-down (create/comment issue + optional Telegram)
+        if: steps.probe.outputs.result == 'fail'
+        run: |
+          ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          body="Prod health check failed at $ts
+          URL: $URL/api/health
+          HTTP: ${{ steps.probe.outputs.http_code }}
+          status: ${{ steps.probe.outputs.status }}
+          suno_auth.last_refresh_sec_ago: ${{ steps.probe.outputs.refresh_ago }}
+          Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --label prod-down --state open --json number --jq '.[0].number' || echo "")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+            echo "Commented on existing issue #$existing"
+          else
+            url=$(gh issue create --title "[prod-down] Suno API health check failed at $ts" --label prod-down --body "$body")
+            echo "Created $url"
+            if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
+              curl -sS -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" --data-urlencode "chat_id=$TG_CHAT" --data-urlencode "text=🚨 Suno API prod-down: $URL (HTTP ${{ steps.probe.outputs.http_code }}, status=${{ steps.probe.outputs.status }}). Issue: $url" > /dev/null || true
+            fi
+          fi
+
+      - name: Close stale prod-down issues on recovery
+        if: steps.probe.outputs.result == 'ok'
+        run: |
+          open=$(gh issue list --label prod-down --state open --json number --jq '.[].number' || echo "")
+          for n in $open; do
+            gh issue close "$n" --comment "Recovered at $(date -u +%Y-%m-%dT%H:%M:%SZ). /api/health=ok."
+          done
+
+# Required GitHub Secrets (Settings -> Secrets and variables -> Actions):
+#   TELEGRAM_BOT_TOKEN    - optional, bot token for Telegram alerts
+#   ADMIN_TELEGRAM_CHAT_ID - optional, chat id to send alerts to
+#   GITHUB_TOKEN - auto-provided, no setup needed
+# Optional GitHub Variables:
+#   RAILWAY_PUBLIC_URL - override default prod URL

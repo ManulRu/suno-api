@@ -108,3 +108,93 @@
 - Реальные `SUNO_COOKIE`, `SUNO_SESSION_ID`, `RAILWAY_TOKEN`, `VERCEL_TOKEN`, `YOOKASSA_SECRET_KEY` и прочие прод-креды.
 - Они приходят в чат одноразово, используются для диагностики/деплоя, и не записываются в файлы.
 - Токены для CI/CD — только через GitHub Secrets / Vercel env (dashboard), никогда в git.
+
+---
+
+## УПРАВЛЕНИЕ ПРОД-КРЕДАМИ — ЖЕЛЕЗНО
+
+Обязательная политика обращения с секретами. Нарушение = инцидент безопасности с обязательной ротацией.
+
+### 1. Где живут секреты (single source of truth)
+
+| Секрет | Место хранения | Репо |
+|---|---|---|
+| `SUNO_COOKIE` | **Railway Variables** (dashboard) | suno-api-reset |
+| `SUNO_SESSION_ID` | **Railway Variables** (dashboard) | suno-api-reset |
+| `TWOCAPTCHA_KEY` | **Railway Variables** (dashboard) | suno-api-reset |
+| `RAILWAY_TOKEN` | **GitHub Secrets** (для CI workflow) | suno-api-reset |
+| `YOOKASSA_*` | **Vercel Environment Variables** (dashboard) | gift-song-pwa |
+| `NOWPAYMENTS_*` | **Vercel Environment Variables** (dashboard) | gift-song-pwa |
+| `TELEGRAM_BOT_TOKEN` | **Vercel Environment Variables** (dashboard) | gift-song-pwa |
+| `QSTASH_*` | **Vercel Environment Variables** (dashboard) | gift-song-pwa |
+| `SUPABASE_SERVICE_ROLE_KEY` | **Vercel Environment Variables** (dashboard) | gift-song-pwa |
+| `.env`, `.env.local`, `.env.prod` | **НИКОГДА в git**, всегда в `.gitignore` | любой |
+
+### 2. Ротация
+
+- **`SUNO_COOKIE`** — ротация при каждом подозрении на утечку (попал в чат, в скриншот, в лог), минимум **раз в 30 дней**.
+- **`RAILWAY_TOKEN` / `VERCEL_TOKEN`** — ротация **раз в 90 дней**.
+- **Любые creds после сессии с `.env.local`** — удалить файл командой `rm .env.local` сразу после завершения задачи.
+- **Пароли Suno / Vercel / Railway** — ротация при **любом** инциденте утечки. Не ждать планового цикла.
+
+### 3. Запрет на получение секретов через чат (ЖЁСТКО)
+
+- Автопилот (Claude Code) **никогда** не просит: паролей, cookie-строк, токенов напрямую в чат.
+- Если пользователь всё же прислал секрет в чат — автопилот обязан:
+  1. (a) Ответить: **«⚠️ секрет попал в транскрипт, немедленно ротируй»**
+  2. (b) **Не использовать** полученное значение
+  3. (c) **Не записывать** в файл (ни в `.env`, ни в код, ни в отчёт)
+  4. (d) **Не цитировать** значение обратно в чате
+- Для диагностики использовать изолированный путь:
+  - Пользователь сам кладёт секрет в `.env.local` локально
+  - Запускает локальные скрипты, которые **не логируют значения**
+  - Делится с автопилотом **только обезличенным output** (length, hash, present/absent флаг)
+
+### 4. Логирование
+
+- **Никогда** не логировать значение `SUNO_COOKIE`, JWT, токенов в `console.log` / `logger.info` / `logger.debug`.
+- Логировать только **маркеры**:
+  - длину строки (`cookie.length`)
+  - первые 4 символа (`cookie.slice(0, 4)`)
+  - флаг `present / absent`
+- Pino-логи в проде **не должны** содержать raw `Authorization: Bearer ...` — только события типа `event: keepalive_ok`, `event: auth_refreshed`.
+
+### 5. Чек-лист перед каждым деплоем
+
+- [ ] `git diff --staged` не содержит значений env-переменных (cookie-строк, токенов, ключей)
+- [ ] `.env*.local`, `.env.prod` присутствуют в `.gitignore`
+- [ ] Новые секреты добавлены в Railway/Vercel dashboard, **не в код**
+- [ ] Если есть diagnostic-скрипт — он **не пишет cookie** в output-файлы (проверить все `fs.writeFile`, `console.log`, redirect в `> file.txt`)
+
+### 6. Инцидент-response (что делать, если секрет утёк)
+
+1. **Немедленно ротировать** — сменить cookie / пароль / токен в панели провайдера
+2. **Обновить значение** в Railway Variables / Vercel Environment Variables
+3. **Проверить audit logs** провайдера на подозрительную активность (Suno account activity, Railway deploy log, Vercel deploy log)
+4. **Записать инцидент** в `SECURITY_INCIDENTS.md` (создать файл, если нет) с полями:
+   - Дата / время (UTC)
+   - Что именно утекло (переменная, провайдер)
+   - Канал утечки (чат, скриншот, git, лог)
+   - Как ротировано (новое значение установлено где, когда)
+   - Kill-switch: старое значение отозвано? да/нет
+
+---
+
+## МОНИТОРИНГ — ОБЯЗАТЕЛЕН
+
+### Правила
+
+1. Любой коммит влияющий на прод → **через 10 минут после деплоя проверить `/api/health`**. Если не `ok` → rollback последнего коммита или немедленный hotfix.
+2. **Внешний мониторинг обязателен**: GitHub Actions cron `.github/workflows/health-monitor.yml` пингает `/api/health` каждые 5 минут.
+3. Рекомендуется второй watchdog — UptimeRobot или Better Uptime (free tier) — на случай если GitHub Actions сами упадут.
+
+### Реакция на prod-down issue
+
+Если автоматический мониторинг создал GitHub Issue с меткой `prod-down`:
+
+1. Открыть issue, прочитать HTTP code, status, `last_refresh_sec_ago`
+2. Вручную проверить `curl <prod>/api/health` и отдельные endpoints (`/api/get_limit`)
+3. Проанализировать structured logs Railway за последние 30 минут — искать `keepalive_fail`, `selector_no_match`, `captcha_*` события
+4. Если regression от последнего коммита → **rollback на Railway** (dashboard -> Deployments -> предыдущий deploy -> Redeploy) ИЛИ push hotfix
+5. Если корень — истёкший `SUNO_COOKIE` → обновить в Railway Variables
+6. Когда health снова `ok` → мониторинг сам закроет issue с комментарием recovery
