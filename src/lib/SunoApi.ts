@@ -19,6 +19,8 @@ globalForSunoApi.sunoApiCache = cache;
 
 const logger = pino();
 export const DEFAULT_MODEL = 'chirp-v3-5';
+// Clerk JWT TTL: Clerk tokens live ~5 min; refresh slightly earlier for safety
+const TOKEN_TTL_MS = 4 * 60 * 1000;
 
 export interface AudioInfo {
   id: string; // Unique identifier for the audio
@@ -75,6 +77,7 @@ class SunoApi {
   private readonly client: AxiosInstance;
   private sid?: string;
   private currentToken?: string;
+  private tokenIssuedAt?: number;
   private deviceId?: string;
   private userAgent?: string;
   private cookies: Record<string, string | undefined>;
@@ -192,10 +195,28 @@ class SunoApi {
     if (!this.sid) {
       throw new Error('Session ID is not set. Cannot renew token.');
     }
+    // TTL cache: skip Clerk round-trip while the current JWT is still fresh
+    if (
+      this.currentToken &&
+      this.tokenIssuedAt &&
+      Date.now() - this.tokenIssuedAt < TOKEN_TTL_MS
+    ) {
+      logger.info({
+        event: 'keepalive_cache_hit',
+        sid: this.sid,
+        token_age_ms: Date.now() - this.tokenIssuedAt,
+        msg: 'keepAlive: cache hit, skipping Clerk'
+      });
+      return;
+    }
+    logger.info({
+      event: 'keepalive_cache_miss',
+      sid: this.sid,
+      msg: 'keepAlive: cache miss, calling Clerk'
+    });
+    logger.info({ event: 'keepalive_start', sid: this.sid });
     // URL to renew session token
     const renewUrl = `${SunoApi.CLERK_BASE_URL}/v1/client/sessions/${this.sid}/tokens?__clerk_api_version=2025-11-10&_clerk_js_version=${SunoApi.CLERK_VERSION}`;
-    // Renew session token
-    logger.info('KeepAlive...\n');
     const clientToken = (this.cookies.__client || '').replace(/[^\x20-\x7E]/g, '').trim();
     // Use a clean axios instance (no Android headers) for Clerk auth endpoint
     const cleanClient = axios.create({
@@ -205,13 +226,30 @@ class SunoApi {
         'Cookie': `__client=${clientToken}`,
       }
     });
-    const renewResponse = await cleanClient.post(renewUrl, {});
-    if (isWait) {
-      await sleep(1, 2);
+    try {
+      const renewResponse = await cleanClient.post(renewUrl, {});
+      if (isWait) {
+        await sleep(1, 2);
+      }
+      const newToken = renewResponse.data.jwt;
+      // Update Authorization field in request header with the new JWT token
+      this.currentToken = newToken;
+      this.tokenIssuedAt = Date.now();
+      logger.info({ event: 'keepalive_ok', token_age_ms: 0 });
+    } catch (e: any) {
+      logger.warn({ event: 'keepalive_fail', err: e?.message ?? String(e) });
+      throw e;
     }
-    const newToken = renewResponse.data.jwt;
-    // Update Authorization field in request header with the new JWT token
-    this.currentToken = newToken;
+  }
+
+  /**
+   * Returns the age (in milliseconds) of the currently cached JWT, or undefined
+   * if no token has been issued yet. Used by the health endpoint to avoid
+   * exposing internal token state directly.
+   */
+  public getTokenAgeMs(): number | undefined {
+    if (!this.tokenIssuedAt) return undefined;
+    return Date.now() - this.tokenIssuedAt;
   }
 
   /**
@@ -232,7 +270,7 @@ class SunoApi {
     const resp = await this.client.post(`${SunoApi.BASE_URL}/api/c/check`, {
       ctype: 'generation'
     });
-    logger.info(resp.data);
+    logger.info({ event: 'captcha_check', required: resp.data.required });
     return resp.data.required;
   }
 
@@ -303,24 +341,40 @@ class SunoApi {
       headless: yn(process.env.BROWSER_HEADLESS, { default: true })
     });
     const context = await browser.newContext({ userAgent: this.userAgent, locale: process.env.BROWSER_LOCALE, viewport: null });
-    const cookies = [];
+    const cookies: Array<{ name: string; value: string; domain: string; path: string; sameSite: 'Lax' | 'Strict' | 'None' }> = [];
     const lax: 'Lax' | 'Strict' | 'None' = 'Lax';
-    cookies.push({
-      name: '__session',
-      value: this.currentToken+'',
-      domain: '.suno.com',
-      path: '/',
-      sameSite: lax
-    });
-    for (const key in this.cookies) {
+    const sanitize = (v: unknown): string =>
+      String(v ?? '').replace(/[^\x20-\x7E]/g, '').trim();
+    const totalCandidates = Object.keys(this.cookies).length + 1;
+    let filteredOut = 0;
+    const sessionValue = sanitize(this.currentToken);
+    if (sessionValue) {
       cookies.push({
-        name: key,
-        value: this.cookies[key]+'',
+        name: '__session',
+        value: sessionValue,
         domain: '.suno.com',
         path: '/',
         sameSite: lax
-      })
+      });
+    } else {
+      filteredOut++;
     }
+    for (const [key, rawValue] of Object.entries(this.cookies)) {
+      const value = sanitize(rawValue);
+      const name = sanitize(key);
+      if (!name || !value) {
+        filteredOut++;
+        continue;
+      }
+      cookies.push({
+        name,
+        value,
+        domain: '.suno.com',
+        path: '/',
+        sameSite: lax
+      });
+    }
+    logger.info(`launchBrowser: adding ${cookies.length} cookies (filtered ${filteredOut} of ${totalCandidates})`);
     await context.addCookies(cookies);
     return context;
   }
@@ -333,6 +387,7 @@ class SunoApi {
     if (!await this.captchaRequired())
       return null;
 
+    logger.info({ event: 'captcha_start' });
     logger.info('CAPTCHA required. Launching browser...')
     const browser = await this.launchBrowser();
     const page = await browser.newPage();
@@ -439,12 +494,14 @@ class SunoApi {
     return (new Promise((resolve, reject) => {
       page.route('**/api/generate/v2/**', async (route: any) => {
         try {
+          logger.info({ event: 'captcha_token_received' });
           logger.info('hCaptcha token received. Closing browser');
           route.abort();
           browser.browser()?.close();
           controller.abort();
           const request = route.request();
           this.currentToken = request.headers().authorization.split('Bearer ').pop();
+          this.tokenIssuedAt = Date.now();
           resolve(request.postDataJSON().token);
         } catch(err) {
           reject(err);
