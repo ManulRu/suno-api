@@ -3,12 +3,15 @@ import { cookies } from 'next/headers'
 import { DEFAULT_MODEL, sunoApi } from "@/lib/SunoApi";
 import { corsHeaders } from "@/lib/utils";
 import { requireInternalToken } from "@/lib/requireInternalToken";
+import { getRequestLogger } from "@/lib/withRequestId";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   const authError = requireInternalToken(req);
   if (authError) return authError;
+  const { logger: reqLogger, rid } = getRequestLogger(req);
+  reqLogger.info({ event: 'request_start', route: '/api/generate' });
   if (req.method === 'POST') {
     try {
       const body = await req.json();
@@ -21,64 +24,71 @@ export async function POST(req: NextRequest) {
         Boolean(wait_audio)
       );
 
+      reqLogger.info({ event: 'request_ok', route: '/api/generate' });
       return new NextResponse(JSON.stringify(audioInfo), {
         status: 200,
         headers: {
           'Content-Type': 'application/json',
-          ...corsHeaders
+          ...corsHeaders,
+          'X-Request-ID': rid
         }
       });
     } catch (error: any) {
+      reqLogger.error({ event: 'request_error', route: '/api/generate', err: error?.message ?? String(error) });
       console.error('Error generating audio:', error);
-      
+
       // Handle different types of errors
       if (error.response) {
         // Axios error with response
         console.error('Response error:', JSON.stringify(error.response.data));
-        
+
         if (error.response.status === 402) {
-          return new NextResponse(JSON.stringify({ 
-            error: error.response.data?.detail || 'Payment required' 
+          return new NextResponse(JSON.stringify({
+            error: error.response.data?.detail || 'Payment required'
           }), {
             status: 402,
             headers: {
               'Content-Type': 'application/json',
-              ...corsHeaders
+              ...corsHeaders,
+              'X-Request-ID': rid
             }
           });
         }
-        
-        return new NextResponse(JSON.stringify({ 
+
+        return new NextResponse(JSON.stringify({
           error: 'API Error: ' + (error.response.data?.detail || error.response.statusText || 'Unknown error')
         }), {
           status: error.response.status || 500,
           headers: {
             'Content-Type': 'application/json',
-            ...corsHeaders
+            ...corsHeaders,
+            'X-Request-ID': rid
           }
         });
       } else if (error.request) {
         // Axios error without response (network error, timeout, etc.)
         console.error('Network error:', error.message);
-        return new NextResponse(JSON.stringify({ 
-          error: 'Network error: Unable to connect to Suno API. Please check your internet connection and try again.' 
+        return new NextResponse(JSON.stringify({
+          error: 'Network error: Unable to connect to Suno API. Please check your internet connection and try again.'
         }), {
           status: 503,
           headers: {
             'Content-Type': 'application/json',
-            ...corsHeaders
+            ...corsHeaders,
+            'X-Request-ID': rid
           }
         });
       } else {
         // Other types of errors (timeout, etc.)
         console.error('Other error:', error.message);
-        return new NextResponse(JSON.stringify({ 
-          error: 'Internal error: ' + (error.message || 'Unknown error occurred') 
+        return new NextResponse(JSON.stringify({
+          error: 'Internal error: ' + (error.message || 'Unknown error occurred')
         }), {
           status: 500,
           headers: {
             'Content-Type': 'application/json',
-            ...corsHeaders
+            ...corsHeaders,
+            'X-Request-ID': rid
           }
         });
       }
