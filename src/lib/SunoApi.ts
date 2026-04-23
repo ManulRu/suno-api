@@ -463,26 +463,64 @@ class SunoApi {
     // (2026-04-23). Override via SUNO_HCAPTCHA_SITEKEY env if Suno rotates it.
     const sitekey = process.env.SUNO_HCAPTCHA_SITEKEY || 'd65453de-3f1a-4aac-9366-a0f06e52b2ce';
     const pageurl = process.env.SUNO_HCAPTCHA_PAGEURL || 'https://suno.com/create';
-    if (!process.env.TWOCAPTCHA_KEY || !process.env.TWOCAPTCHA_KEY.trim()) {
+    const apiKey = process.env.TWOCAPTCHA_KEY?.trim();
+    if (!apiKey) {
       throw new Error('TWOCAPTCHA_KEY env var not configured');
     }
     logger.info({ event: 'captcha_http_start', sitekey: sitekey.slice(0, 8) + '...', pageurl });
-    try {
-      const result: { data: string; id: string } = await this.solver.hcaptcha({
-        sitekey,
-        pageurl,
-        invisible: 1,
-      });
-      logger.info({ event: 'captcha_http_ok', captcha_id: result.id, token_len: result.data?.length });
-      return result.data;
-    } catch (e: any) {
-      // 2Captcha SDK's APIError stores the original error code in .err property;
-      // .message is a formatted friendly version that hides the actual code.
-      const rawCode = e?.err ?? null;
-      const msg = e?.message ?? String(e);
-      logger.error({ event: 'captcha_http_failed', raw_code: rawCode, err: msg });
-      throw new Error(`2Captcha HTTP solve failed [${rawCode || 'unknown'}]: ${msg}`);
+
+    // 2Captcha v2 JSON API (api.2captcha.com) directly via axios — the legacy
+    // /in.php path via @2captcha/captcha-solver SDK returned ERROR_METHOD_CALL
+    // for hCaptcha (deprecated there). The new createTask endpoint is the
+    // supported path. Docs: https://2captcha.com/api-docs/hcaptcha
+    const createTaskRes = await axios.post(
+      'https://api.2captcha.com/createTask',
+      {
+        clientKey: apiKey,
+        task: {
+          type: 'HCaptchaTaskProxyless',
+          websiteURL: pageurl,
+          websiteKey: sitekey,
+          isInvisible: true,
+        },
+      },
+      { timeout: 15000 }
+    );
+    if (createTaskRes.data?.errorId !== 0) {
+      const code = createTaskRes.data?.errorCode ?? 'UNKNOWN';
+      const desc = createTaskRes.data?.errorDescription ?? JSON.stringify(createTaskRes.data);
+      logger.error({ event: 'captcha_createtask_failed', code, desc });
+      throw new Error(`2Captcha createTask failed [${code}]: ${desc}`);
     }
+    const taskId = createTaskRes.data.taskId;
+    logger.info({ event: 'captcha_task_created', taskId });
+
+    // Poll getTaskResult every 5s up to 120s
+    const maxAttempts = 24;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      await sleep(5, 5);
+      const resultRes = await axios.post(
+        'https://api.2captcha.com/getTaskResult',
+        { clientKey: apiKey, taskId },
+        { timeout: 15000 }
+      );
+      if (resultRes.data?.errorId !== 0) {
+        const code = resultRes.data?.errorCode ?? 'UNKNOWN';
+        const desc = resultRes.data?.errorDescription ?? JSON.stringify(resultRes.data);
+        logger.error({ event: 'captcha_getresult_failed', code, desc, taskId });
+        throw new Error(`2Captcha getTaskResult failed [${code}]: ${desc}`);
+      }
+      if (resultRes.data.status === 'ready') {
+        const token = resultRes.data.solution?.token || resultRes.data.solution?.gRecaptchaResponse;
+        if (!token) {
+          throw new Error(`2Captcha returned ready but no token: ${JSON.stringify(resultRes.data.solution)}`);
+        }
+        logger.info({ event: 'captcha_http_ok', taskId, attempts: attempt, token_len: token.length });
+        return token;
+      }
+      // status === 'processing', keep polling
+    }
+    throw new Error(`2Captcha timeout after ${maxAttempts * 5}s waiting for taskId=${taskId}`);
   }
 
   private async solveCaptcha(): Promise<string|null> {
