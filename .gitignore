@@ -33,6 +33,12 @@ yarn-error.log*
 .env.development
 .env.test
 
+# supabase CLI cache
+supabase/.temp/
+
+# IDE
+.claude/
+
 # vercel
 .vercel
 
