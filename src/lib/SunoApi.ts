@@ -492,21 +492,26 @@ class SunoApi {
       // Continue — network error on balance check shouldn't block the solve attempt.
     }
 
-    // Submit hCaptcha task via classic /in.php with POST form data (JSON response
-    // mode via json=1). This is the documented path that works for all methods.
-    const createParams = new URLSearchParams({
+    // Submit hCaptcha via /in.php with GET query string (documented path).
+    // Invisible flag only when SUNO_HCAPTCHA_INVISIBLE=1 (Suno uses visible
+    // hCaptcha by default — invisible is a rare case per 2Captcha docs).
+    const createParamsObj: Record<string, string> = {
       key: apiKey,
       method: 'hcaptcha',
       sitekey,
       pageurl,
-      invisible: '1',
       json: '1',
-    });
-    const createRes = await axios.post(`${base}/in.php`, createParams.toString(), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    };
+    if (process.env.SUNO_HCAPTCHA_INVISIBLE === '1') {
+      createParamsObj.invisible = '1';
+    }
+    logger.info({ event: 'captcha_submit_params', keys: Object.keys(createParamsObj) });
+    const createRes = await axios.get(`${base}/in.php`, {
+      params: createParamsObj,
       timeout: 15000,
     });
     const createData = createRes.data;
+    logger.info({ event: 'captcha_submit_response', status: createData?.status, request: createData?.request });
     if (createData?.status !== 1) {
       const code = createData?.request ?? JSON.stringify(createData);
       logger.error({ event: 'captcha_submit_failed', code, provider });
