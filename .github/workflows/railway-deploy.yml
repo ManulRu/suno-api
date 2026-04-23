@@ -18,22 +18,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check RAILWAY_TOKEN
+        id: check
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::warning::RAILWAY_TOKEN secret not set in GitHub. Skipping CI deploy — Railway native GitHub integration handles deploys instead. To enable this workflow as backup, add RAILWAY_TOKEN secret in Settings → Secrets and variables → Actions."
+            echo "has_token=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_token=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: Install Railway CLI
+        if: steps.check.outputs.has_token == 'true'
         run: |
           curl -fsSL https://railway.app/install.sh | sh
           echo "$HOME/.railway/bin" >> $GITHUB_PATH
 
       - name: Railway up (deploy current commit)
+        if: steps.check.outputs.has_token == 'true'
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
-          if [ -z "$RAILWAY_TOKEN" ]; then
-            echo "::error::RAILWAY_TOKEN secret is not set in GitHub repo"
-            exit 1
-          fi
           railway up --ci --service ${{ vars.RAILWAY_SERVICE_NAME || 'suno-api' }}
 
       - name: Post-deploy health check
+        if: steps.check.outputs.has_token == 'true'
         run: |
           URL="${{ vars.RAILWAY_PUBLIC_URL || 'https://suno-api-production-cfc9.up.railway.app' }}"
           echo "Polling $URL/api/health (max 5 minutes)..."
