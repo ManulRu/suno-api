@@ -476,8 +476,12 @@ class SunoApi {
       logger.info({ event: 'captcha_http_ok', captcha_id: result.id, token_len: result.data?.length });
       return result.data;
     } catch (e: any) {
-      logger.error({ event: 'captcha_http_failed', err: e?.message ?? String(e) });
-      throw new Error(`2Captcha HTTP solve failed: ${e?.message ?? e}`);
+      // 2Captcha SDK's APIError stores the original error code in .err property;
+      // .message is a formatted friendly version that hides the actual code.
+      const rawCode = e?.err ?? null;
+      const msg = e?.message ?? String(e);
+      logger.error({ event: 'captcha_http_failed', raw_code: rawCode, err: msg });
+      throw new Error(`2Captcha HTTP solve failed [${rawCode || 'unknown'}]: ${msg}`);
     }
   }
 
