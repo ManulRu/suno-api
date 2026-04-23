@@ -448,9 +448,50 @@ class SunoApi {
     }
   }
 
+  /**
+   * Solve Suno's invisible hCaptcha via 2Captcha HTTP API — no browser.
+   * The legacy Playwright path breaks when Suno stops rendering the iframe
+   * (as happened in late April 2026). This path sends site-key + page URL
+   * directly to 2Captcha's solving workers and gets back a token for the
+   * generation payload. Total time: ~15-60s (depends on 2Captcha queue).
+   *
+   * Site-key is public knowledge (embedded in Suno's HTML). Override with
+   * SUNO_HCAPTCHA_SITEKEY env var if Suno rotates it.
+   */
+  private async solveCaptchaHttp(): Promise<string> {
+    const sitekey = process.env.SUNO_HCAPTCHA_SITEKEY || '4c672d35-0701-42b2-88c3-78380b0db560';
+    const pageurl = process.env.SUNO_HCAPTCHA_PAGEURL || 'https://suno.com/create';
+    if (!process.env.TWOCAPTCHA_KEY || !process.env.TWOCAPTCHA_KEY.trim()) {
+      throw new Error('TWOCAPTCHA_KEY env var not configured');
+    }
+    logger.info({ event: 'captcha_http_start', sitekey: sitekey.slice(0, 8) + '...', pageurl });
+    try {
+      const result: { data: string; id: string } = await this.solver.hcaptcha({
+        sitekey,
+        pageurl,
+        invisible: 1,
+      });
+      logger.info({ event: 'captcha_http_ok', captcha_id: result.id, token_len: result.data?.length });
+      return result.data;
+    } catch (e: any) {
+      logger.error({ event: 'captcha_http_failed', err: e?.message ?? String(e) });
+      throw new Error(`2Captcha HTTP solve failed: ${e?.message ?? e}`);
+    }
+  }
+
   private async solveCaptcha(): Promise<string|null> {
     if (!await this.captchaRequired())
       return null;
+
+    // HTTP path (default 2026-04-23): Suno stopped showing hCaptcha iframe
+    // after the Create click, so the Playwright flow hangs waiting for it.
+    // Instead we ask 2Captcha to solve the invisible hCaptcha directly via
+    // their HTTP API using the Suno site-key. No browser involved.
+    // Set SUNO_CAPTCHA_MODE=browser to force the legacy flow.
+    const mode = process.env.SUNO_CAPTCHA_MODE || 'http';
+    if (mode === 'http') {
+      return await this.solveCaptchaHttp();
+    }
 
     logger.info({ event: 'captcha_start' });
     logger.info('CAPTCHA required. Launching browser...')
