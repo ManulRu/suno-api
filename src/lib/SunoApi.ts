@@ -469,58 +469,73 @@ class SunoApi {
     }
     logger.info({ event: 'captcha_http_start', sitekey: sitekey.slice(0, 8) + '...', pageurl });
 
-    // 2Captcha v2 JSON API (api.2captcha.com) directly via axios — the legacy
-    // /in.php path via @2captcha/captcha-solver SDK returned ERROR_METHOD_CALL
-    // for hCaptcha (deprecated there). The new createTask endpoint is the
-    // supported path. Docs: https://2captcha.com/api-docs/hcaptcha
-    const createTaskRes = await axios.post(
-      'https://api.2captcha.com/createTask',
-      {
-        clientKey: apiKey,
-        task: {
-          type: 'HCaptchaTaskProxyless',
-          websiteURL: pageurl,
-          websiteKey: sitekey,
-          isInvisible: true,
-        },
-      },
-      { timeout: 15000 }
-    );
-    if (createTaskRes.data?.errorId !== 0) {
-      const code = createTaskRes.data?.errorCode ?? 'UNKNOWN';
-      const desc = createTaskRes.data?.errorDescription ?? JSON.stringify(createTaskRes.data);
-      logger.error({ event: 'captcha_createtask_failed', code, desc });
-      throw new Error(`2Captcha createTask failed [${code}]: ${desc}`);
-    }
-    const taskId = createTaskRes.data.taskId;
-    logger.info({ event: 'captcha_task_created', taskId });
+    // Pick base domain: 2captcha.com (default) or rucaptcha.com (fallback for
+    // accounts funded via RuCaptcha payments). Can override via SUNO_CAPTCHA_PROVIDER.
+    const provider = (process.env.SUNO_CAPTCHA_PROVIDER || '2captcha').toLowerCase();
+    const base = provider === 'rucaptcha' ? 'https://rucaptcha.com' : 'https://2captcha.com';
 
-    // Poll getTaskResult every 5s up to 120s
+    // Sanity: check balance first — this validates the key + provider choice.
+    // If the key is invalid or funds haven't settled, we see it immediately.
+    try {
+      const balRes = await axios.get(`${base}/res.php`, {
+        params: { key: apiKey, action: 'getbalance', json: 1 },
+        timeout: 15000,
+      });
+      logger.info({ event: 'captcha_balance_check', provider, status: balRes.data?.status, request: balRes.data?.request });
+      if (balRes.data?.status !== 1) {
+        const err = balRes.data?.request ?? JSON.stringify(balRes.data);
+        throw new Error(`2Captcha balance check failed on ${provider}: ${err}`);
+      }
+    } catch (e: any) {
+      if (e?.message?.startsWith('2Captcha balance')) throw e;
+      logger.warn({ event: 'captcha_balance_check_err', err: e?.message });
+      // Continue — network error on balance check shouldn't block the solve attempt.
+    }
+
+    // Submit hCaptcha task via classic /in.php with POST form data (JSON response
+    // mode via json=1). This is the documented path that works for all methods.
+    const createParams = new URLSearchParams({
+      key: apiKey,
+      method: 'hcaptcha',
+      sitekey,
+      pageurl,
+      invisible: '1',
+      json: '1',
+    });
+    const createRes = await axios.post(`${base}/in.php`, createParams.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 15000,
+    });
+    const createData = createRes.data;
+    if (createData?.status !== 1) {
+      const code = createData?.request ?? JSON.stringify(createData);
+      logger.error({ event: 'captcha_submit_failed', code, provider });
+      throw new Error(`2Captcha submit failed on ${provider} [${code}]`);
+    }
+    const captchaId = createData.request;
+    logger.info({ event: 'captcha_task_created', captchaId, provider });
+
+    // Poll res.php every 5s up to 120s for result
     const maxAttempts = 24;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       await sleep(5, 5);
-      const resultRes = await axios.post(
-        'https://api.2captcha.com/getTaskResult',
-        { clientKey: apiKey, taskId },
-        { timeout: 15000 }
-      );
-      if (resultRes.data?.errorId !== 0) {
-        const code = resultRes.data?.errorCode ?? 'UNKNOWN';
-        const desc = resultRes.data?.errorDescription ?? JSON.stringify(resultRes.data);
-        logger.error({ event: 'captcha_getresult_failed', code, desc, taskId });
-        throw new Error(`2Captcha getTaskResult failed [${code}]: ${desc}`);
-      }
-      if (resultRes.data.status === 'ready') {
-        const token = resultRes.data.solution?.token || resultRes.data.solution?.gRecaptchaResponse;
-        if (!token) {
-          throw new Error(`2Captcha returned ready but no token: ${JSON.stringify(resultRes.data.solution)}`);
-        }
-        logger.info({ event: 'captcha_http_ok', taskId, attempts: attempt, token_len: token.length });
+      const resultRes = await axios.get(`${base}/res.php`, {
+        params: { key: apiKey, action: 'get', id: captchaId, json: 1 },
+        timeout: 15000,
+      });
+      const resultData = resultRes.data;
+      if (resultData?.status === 1) {
+        const token = resultData.request;
+        logger.info({ event: 'captcha_http_ok', captchaId, attempts: attempt, token_len: token?.length });
         return token;
       }
-      // status === 'processing', keep polling
+      if (resultData?.request && resultData.request !== 'CAPCHA_NOT_READY') {
+        logger.error({ event: 'captcha_poll_failed', code: resultData.request, captchaId });
+        throw new Error(`2Captcha poll failed [${resultData.request}]`);
+      }
+      // CAPCHA_NOT_READY — keep polling
     }
-    throw new Error(`2Captcha timeout after ${maxAttempts * 5}s waiting for taskId=${taskId}`);
+    throw new Error(`2Captcha timeout after ${maxAttempts * 5}s waiting for captchaId=${captchaId}`);
   }
 
   private async solveCaptcha(): Promise<string|null> {
