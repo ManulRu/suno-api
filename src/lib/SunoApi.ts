@@ -459,7 +459,9 @@ class SunoApi {
    * SUNO_HCAPTCHA_SITEKEY env var if Suno rotates it.
    */
   private async solveCaptchaHttp(): Promise<string> {
-    const sitekey = process.env.SUNO_HCAPTCHA_SITEKEY || '4c672d35-0701-42b2-88c3-78380b0db560';
+    // Site-key extracted from Suno's /_next/static/chunks/75d28f50eea84ff1.js
+    // (2026-04-23). Override via SUNO_HCAPTCHA_SITEKEY env if Suno rotates it.
+    const sitekey = process.env.SUNO_HCAPTCHA_SITEKEY || 'd65453de-3f1a-4aac-9366-a0f06e52b2ce';
     const pageurl = process.env.SUNO_HCAPTCHA_PAGEURL || 'https://suno.com/create';
     if (!process.env.TWOCAPTCHA_KEY || !process.env.TWOCAPTCHA_KEY.trim()) {
       throw new Error('TWOCAPTCHA_KEY env var not configured');
