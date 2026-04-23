@@ -56,38 +56,37 @@ export async function GET(req: NextRequest) {
     diagnostics.balance_rucaptcha = { error: e?.message, response: e?.response?.data };
   }
 
-  // Test 3: submit hcaptcha task (don't poll, just see the submit response)
+  // Test 3: submit hcaptcha WITHOUT invisible (default)
   try {
     const res = await axios.get(`${base}/in.php`, {
-      params: {
-        key: apiKey,
-        method: 'hcaptcha',
-        sitekey,
-        pageurl,
-        json: 1,
-      },
+      params: { key: apiKey, method: 'hcaptcha', sitekey, pageurl, json: 1 },
       timeout: 15000,
     });
-    diagnostics.submit_hcaptcha = { status: res.status, data: res.data };
+    diagnostics.submit_hcaptcha_visible = { status: res.status, data: res.data };
   } catch (e: any) {
-    diagnostics.submit_hcaptcha = { error: e?.message, response: e?.response?.data };
+    diagnostics.submit_hcaptcha_visible = { error: e?.message, response: e?.response?.data };
   }
 
-  // Test 4: same but on rucaptcha
+  // Test 4: submit hcaptcha WITH invisible=1 (Suno uses size:"invisible")
   try {
-    const res = await axios.get('https://rucaptcha.com/in.php', {
-      params: {
-        key: apiKey,
-        method: 'hcaptcha',
-        sitekey,
-        pageurl,
-        json: 1,
-      },
+    const res = await axios.get(`${base}/in.php`, {
+      params: { key: apiKey, method: 'hcaptcha', sitekey, pageurl, invisible: 1, json: 1 },
       timeout: 15000,
     });
-    diagnostics.submit_hcaptcha_rucaptcha = { status: res.status, data: res.data };
+    diagnostics.submit_hcaptcha_invisible = { status: res.status, data: res.data };
   } catch (e: any) {
-    diagnostics.submit_hcaptcha_rucaptcha = { error: e?.message, response: e?.response?.data };
+    diagnostics.submit_hcaptcha_invisible = { error: e?.message, response: e?.response?.data };
+  }
+
+  // Test 5: try method=turnstile (Suno also uses Cloudflare Turnstile)
+  try {
+    const res = await axios.get(`${base}/in.php`, {
+      params: { key: apiKey, method: 'turnstile', sitekey, pageurl, json: 1 },
+      timeout: 15000,
+    });
+    diagnostics.submit_turnstile = { status: res.status, data: res.data };
+  } catch (e: any) {
+    diagnostics.submit_turnstile = { error: e?.message, response: e?.response?.data };
   }
 
   return new NextResponse(JSON.stringify(diagnostics, null, 2), {
