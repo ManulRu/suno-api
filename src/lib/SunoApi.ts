@@ -405,11 +405,50 @@ class SunoApi {
     return context;
   }
 
+  // Mutex to serialize captcha-solving flow. When 3 songs are generated in
+  // parallel (gift-song-pwa pattern), they all call getCaptcha() at once.
+  // Without this lock they race on `this.currentToken` + open 3 browsers
+  // simultaneously. Serializing means they queue, reuse the result where
+  // possible (see fresh-token reuse below), and only one browser runs at a
+  // time — massive resource saving and no more token corruption.
+  private captchaInFlight: Promise<string|null> | null = null;
+  private lastCaptchaToken: string | null = null;
+  private lastCaptchaAt: number = 0;
+  private static CAPTCHA_REUSE_WINDOW_MS = 30_000;
+
   /**
-   * Checks for CAPTCHA verification and solves the CAPTCHA if needed
-   * @returns {string|null} hCaptcha token. If no verification is required, returns null
+   * Checks for CAPTCHA verification and solves the CAPTCHA if needed.
+   * Serialized via mutex to prevent concurrent Playwright sessions from
+   * corrupting `this.currentToken`. Fresh tokens (< 30s old) are reused
+   * across parallel callers to avoid redundant solve cost.
+   * @returns {string|null} hCaptcha token. If no verification required, null.
    */
   public async getCaptcha(): Promise<string|null> {
+    // Reuse fresh token across parallel callers (same order = 3 songs)
+    if (this.lastCaptchaToken && Date.now() - this.lastCaptchaAt < SunoApi.CAPTCHA_REUSE_WINDOW_MS) {
+      logger.info({ event: 'captcha_reuse', age_ms: Date.now() - this.lastCaptchaAt });
+      return this.lastCaptchaToken;
+    }
+    // If another caller is solving right now, wait for their result
+    if (this.captchaInFlight) {
+      logger.info({ event: 'captcha_wait_in_flight' });
+      return this.captchaInFlight;
+    }
+    // We are the first: acquire mutex, solve, release
+    this.captchaInFlight = this.solveCaptcha();
+    try {
+      const token = await this.captchaInFlight;
+      if (token) {
+        this.lastCaptchaToken = token;
+        this.lastCaptchaAt = Date.now();
+      }
+      return token;
+    } finally {
+      this.captchaInFlight = null;
+    }
+  }
+
+  private async solveCaptcha(): Promise<string|null> {
     if (!await this.captchaRequired())
       return null;
 

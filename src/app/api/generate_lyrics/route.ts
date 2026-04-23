@@ -2,10 +2,13 @@ import { NextResponse, NextRequest } from "next/server";
 import { cookies } from 'next/headers'
 import { sunoApi } from "@/lib/SunoApi";
 import { corsHeaders } from "@/lib/utils";
+import { requireInternalToken } from "@/lib/requireInternalToken";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
+  const authError = requireInternalToken(req);
+  if (authError) return authError;
   if (req.method === 'POST') {
     try {
       const body = await req.json();
