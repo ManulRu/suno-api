@@ -21,6 +21,11 @@ const logger = pino();
 export const DEFAULT_MODEL = 'chirp-v3-5';
 // Clerk JWT TTL: Clerk tokens live ~5 min; refresh slightly earlier for safety
 const TOKEN_TTL_MS = 4 * 60 * 1000;
+// When true (default), skip the Playwright/hCaptcha flow and call Suno API
+// directly with just the Bearer token. Fallback to browser flow only if Suno
+// returns a captcha-required error. Set SUNO_SKIP_CAPTCHA=false in Railway
+// Variables to force the old browser flow (e.g. if Suno re-introduces hCaptcha).
+const SKIP_CAPTCHA_FLOW = process.env.SUNO_SKIP_CAPTCHA !== 'false';
 
 export interface AudioInfo {
   id: string; // Unique identifier for the audio
@@ -720,48 +725,84 @@ class SunoApi {
     continue_at?: number
   ): Promise<AudioInfo[]> {
     await this.keepAlive();
-    const payload: any = {
-      make_instrumental: make_instrumental,
-      mv: model || DEFAULT_MODEL,
-      prompt: '',
-      generation_type: 'TEXT',
-      continue_at: continue_at,
-      continue_clip_id: continue_clip_id,
-      task: task,
-      token: await this.getCaptcha()
-    };
-    if (isCustom) {
-      payload.tags = tags;
-      payload.title = title;
-      payload.negative_tags = negative_tags;
-      payload.prompt = prompt;
-    } else {
-      payload.gpt_description_prompt = prompt;
-    }
-    logger.info(
-      'generateSongs payload:\n' +
-        JSON.stringify(
-          {
-            prompt: prompt,
-            isCustom: isCustom,
-            tags: tags,
-            title: title,
-            make_instrumental: make_instrumental,
-            wait_audio: wait_audio,
-            negative_tags: negative_tags,
-            payload: payload
-          },
-          null,
-          2
-        )
-    );
-    const response = await this.client.post(
-      `${SunoApi.BASE_URL}/api/generate/v2/`,
-      payload,
-      {
-        timeout: 10000 // 10 seconds timeout
+
+    const buildPayload = (captchaToken: string | null) => {
+      const p: any = {
+        make_instrumental: make_instrumental,
+        mv: model || DEFAULT_MODEL,
+        prompt: '',
+        generation_type: 'TEXT',
+        continue_at: continue_at,
+        continue_clip_id: continue_clip_id,
+        task: task,
+        token: captchaToken,
+      };
+      if (isCustom) {
+        p.tags = tags;
+        p.title = title;
+        p.negative_tags = negative_tags;
+        p.prompt = prompt;
+      } else {
+        p.gpt_description_prompt = prompt;
       }
-    );
+      return p;
+    };
+
+    logger.info({
+      event: 'generate_request',
+      isCustom,
+      make_instrumental,
+      wait_audio,
+      has_tags: !!tags,
+      has_title: !!title,
+      prompt_len: prompt?.length ?? 0,
+    });
+
+    // Fast path: direct POST without hCaptcha. Works for authenticated
+    // pro-users when Suno does not gate generation behind visible captcha.
+    // Fallback to Playwright browser flow only if Suno explicitly rejects
+    // with a captcha/challenge signal (HTTP 403/451 or body keyword).
+    let response: any = null;
+    if (SKIP_CAPTCHA_FLOW) {
+      try {
+        logger.info({ event: 'generate_direct_attempt' });
+        response = await this.client.post(
+          `${SunoApi.BASE_URL}/api/generate/v2/`,
+          buildPayload(null),
+          { timeout: 10000 }
+        );
+        logger.info({ event: 'generate_direct_success', http: response.status });
+      } catch (e: any) {
+        const status = e?.response?.status;
+        const body = e?.response?.data;
+        const bodyStr = typeof body === 'string' ? body : JSON.stringify(body || {});
+        const needsCaptchaFallback =
+          status === 403 ||
+          status === 451 ||
+          /captcha|challenge|hcaptcha|turnstile|verification|security check|bot/i.test(bodyStr);
+        logger.warn({
+          event: 'generate_direct_failed',
+          http: status,
+          needs_captcha_fallback: needsCaptchaFallback,
+          body_preview: bodyStr.slice(0, 200),
+        });
+        if (!needsCaptchaFallback) {
+          throw e;
+        }
+        response = null;
+      }
+    }
+
+    if (!response) {
+      logger.info({ event: 'generate_captcha_fallback' });
+      const captchaToken = await this.getCaptcha();
+      response = await this.client.post(
+        `${SunoApi.BASE_URL}/api/generate/v2/`,
+        buildPayload(captchaToken),
+        { timeout: 10000 }
+      );
+    }
+
     if (response.status !== 200) {
       throw new Error('Error response:' + response.statusText);
     }
