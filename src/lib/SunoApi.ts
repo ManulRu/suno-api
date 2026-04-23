@@ -778,8 +778,9 @@ class SunoApi {
         const bodyStr = typeof body === 'string' ? body : JSON.stringify(body || {});
         const needsCaptchaFallback =
           status === 403 ||
+          status === 422 ||
           status === 451 ||
-          /captcha|challenge|hcaptcha|turnstile|verification|security check|bot/i.test(bodyStr);
+          /captcha|challenge|hcaptcha|turnstile|verification|verify|refresh the page|security check|bot/i.test(bodyStr);
         logger.warn({
           event: 'generate_direct_failed',
           http: status,
@@ -794,6 +795,19 @@ class SunoApi {
     }
 
     if (!response) {
+      // Captcha required. Two scenarios:
+      // 1) TWOCAPTCHA_KEY configured → launch Playwright → hCaptcha solver → retry
+      // 2) No key → fail fast with a clear, actionable error (not a 60s hang)
+      const hasCaptchaSolver = !!(process.env.TWOCAPTCHA_KEY && process.env.TWOCAPTCHA_KEY.trim());
+      if (!hasCaptchaSolver) {
+        logger.error({
+          event: 'captcha_required_no_solver',
+          msg: 'Suno requires captcha but TWOCAPTCHA_KEY is not configured. Set it in Railway Variables.',
+        });
+        throw new Error(
+          'Captcha required by Suno but no solver configured. Set TWOCAPTCHA_KEY in Railway Variables and redeploy.'
+        );
+      }
       logger.info({ event: 'generate_captcha_fallback' });
       const captchaToken = await this.getCaptcha();
       response = await this.client.post(
